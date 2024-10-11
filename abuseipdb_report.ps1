@@ -38,23 +38,34 @@ function Log-Message {
     Set-Content -Path $reportLogPath -Value $newLogEntries
 }
 
-# Function to check if an IP address is in a specific range
+# Function to check if an IP address is within a specific range
 function Is-IPInRange {
     param (
         [string]$ip,
-        [string]$cidr
+        [string]$subnet
     )
-    $netmaskBits = [int]($cidr.Split('/')[1])
-    $subnet = $cidr.Split('/')[0]
 
-    $ipBytes = [System.Net.IPAddress]::Parse($ip).GetAddressBytes()
-    $subnetBytes = [System.Net.IPAddress]::Parse($subnet).GetAddressBytes()
+    # Validate IP addresses
+    if (-not [IPAddress]::TryParse($ip, [ref]$null) -or 
+        -not [IPAddress]::TryParse($subnet, [ref]$null)) {
+        Write-Host "One or more IP addresses are invalid."
+        return $false
+    }
 
-    $ipBinary = [System.BitConverter]::ToUInt32($ipBytes[0..3], 0)
-    $subnetBinary = [System.BitConverter]::ToUInt32($subnetBytes[0..3], 0)
+    # Get the first three octets of the subnet
+    $subnetParts = $subnet.Split('.')
+    if ($subnetParts.Length -ne 4) {
+        Write-Host "Subnet $subnet is not a valid IPv4 address."
+        return $false
+    }
 
-    $mask = [math]::pow(2, 32) - [math]::pow(2, 32 - $netmaskBits)
-    return ($ipBinary -band $mask) -eq ($subnetBinary -band $mask)
+    # Get the IP and subnet parts
+    $ipParts = $ip.Split('.')
+    
+    # Compare the first three octets
+    return ($ipParts[0] -eq $subnetParts[0]) -and 
+           ($ipParts[1] -eq $subnetParts[1]) -and 
+           ($ipParts[2] -eq $subnetParts[2])
 }
 
 # Check if the log file exists
@@ -66,7 +77,7 @@ if (Test-Path $logFilePath) {
 
     # Read the log file and filter for IP addresses within the last hour
     $ipAddresses = Get-Content $logFilePath | Where-Object {
-        if ($_ -match '(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})') {
+        if ($_ -match '(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})'-and $_ -notmatch "SEND") {
             $logDateTime = [datetime]::ParseExact($matches[1], 'yyyy-MM-dd HH:mm:ss', $null)
             return $logDateTime -ge $timeThreshold
         }
@@ -75,16 +86,25 @@ if (Test-Path $logFilePath) {
         $_ -replace '.*?(\b(?:\d{1,3}\.){3}\d{1,3}\b).*', '$1'
     } | Sort-Object -Unique
 
+    # Define excluded subnets
+    $excludedSubnets = @("192.168.0.0", "192.168.0.0")
+
     # Report each unique IP address to AbuseIPDB, excluding specific ranges
     foreach ($ip in $ipAddresses) {
         # Exclude the specified IP ranges
-        if (Is-IPInRange $ip "192.168.0.0/24" -or Is-IPInRange $ip "192.168.1.0/24") {
-            Log-Message "Skipped IP: $ip (within excluded range)"
-            continue
+        $excluded = $false
+        foreach ($subnet in $excludedSubnets) {
+            if (Is-IPInRange $ip $subnet) {
+                $excluded = $true
+                Log-Message "Skipped IP: $ip (within excluded range $subnet)"
+                break
+            }
         }
 
+        if ($excluded) { continue }
+
         $url = "https://api.abuseipdb.com/api/v2/report"
-        $comment = "Automatic report from firewall log."
+        $comment = "Automatic report from MS firewall log."
         $categories = "14,15,18"  # Adjust as necessary
 
         $body = @{
