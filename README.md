@@ -6,6 +6,7 @@ The script is intended to run and report the ip addresses once per hour (you can
 Editable variables:  
 Line #2: $logFilePath - location of your FW log files  
 Line #3: $reportLogPath - location where the log files of this script will be located  
+Line #6: $apiKey - this key MUST be edited, paste your AbuseIPDB key between the quotation marks, deleting the YOUR API KEY HERE text from the string  
 Line #65: $timeThreshold - timeframe for reading the FW log (default is last 1hr)
 Line #81: (Is-IPInRange $ip "192.168.0.0/24" -or Is-IPInRange $ip "192.168.1.0/24") - excluded IP ranges from reporting, you can add or remove the ranges as you wish  
 Line #87: $comment - this string will be sent as comment to your report, do not leave this string empty  
