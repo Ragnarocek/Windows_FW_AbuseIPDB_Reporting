@@ -1,5 +1,5 @@
 # Windows_FW_AbuseIPBD_Reporting
-Powershell script for reporting dropped connections to the abuseipdb.com website.  
+Powershell script for reporting dropped connections from Windows Firewall logs to the abuseipdb.com website.  
   
 Editable variables:  
 Line #2: $logFilePath - location of your FW log files  
