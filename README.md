@@ -1,4 +1,4 @@
-# Windows_FW_AbuseIPBD_Reporting
+# Windows_FW_AbuseIPDB_Reporting
 Powershell script for reporting dropped connections from Windows Firewall logs to the abuseipdb.com website.  
   
 The script is intended to run and report the ip addresses once per hour (you can use the Task Scheduler for setting the run time).  
