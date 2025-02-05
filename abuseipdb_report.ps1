@@ -1,9 +1,9 @@
 # Define the path to the Windows Firewall log file
-$logFilePath = "C:\Windows\System32\LogFiles\Firewall\pfirewall.log"
-$reportLogPath = "C:\Logs\abuseipdb_reporting.log"
+$logFilePath = "<FW log file path>"
+$reportLogPath = "<path to script log>\abuseipdb_reporting.log"
 
 # Your AbuseIPDB API key
-$apiKey = "YOUR API KEY HERE"
+$apiKey = "<your api key>"
 
 # Function to log messages
 function Log-Message {
@@ -42,30 +42,38 @@ function Log-Message {
 function Is-IPInRange {
     param (
         [string]$ip,
-        [string]$subnet
+        [string]$cidr
     )
 
-    # Validate IP addresses
-    if (-not [IPAddress]::TryParse($ip, [ref]$null) -or 
-        -not [IPAddress]::TryParse($subnet, [ref]$null)) {
-        Write-Host "One or more IP addresses are invalid."
+    # Validate IP format
+    if (-not [IPAddress]::TryParse($ip, [ref]$null)) {
         return $false
     }
 
-    # Get the first three octets of the subnet
-    $subnetParts = $subnet.Split('.')
-    if ($subnetParts.Length -ne 4) {
-        Write-Host "Subnet $subnet is not a valid IPv4 address."
-        return $false
-    }
+    # Split CIDR notation
+    $parts = $cidr -split '/'
+    if ($parts.Count -ne 2) { return $false }
 
-    # Get the IP and subnet parts
-    $ipParts = $ip.Split('.')
-    
-    # Compare the first three octets
-    return ($ipParts[0] -eq $subnetParts[0]) -and 
-           ($ipParts[1] -eq $subnetParts[1]) -and 
-           ($ipParts[2] -eq $subnetParts[2])
+    $subnetIP = [IPAddress]$parts[0]
+    $subnetMaskBits = [int]$parts[1]
+
+    # Validate subnet mask range
+    if ($subnetMaskBits -lt 0 -or $subnetMaskBits -gt 32) { return $false }
+
+    # Convert IP and subnet to 32-bit unsigned integers (big-endian)
+    $ipBytes = ([IPAddress]::Parse($ip)).GetAddressBytes()
+    [Array]::Reverse($ipBytes)  # Convert to big-endian
+    $ipInt = [BitConverter]::ToUInt32($ipBytes, 0)
+
+    $subnetBytes = $subnetIP.GetAddressBytes()
+    [Array]::Reverse($subnetBytes)  # Convert to big-endian
+    $subnetInt = [BitConverter]::ToUInt32($subnetBytes, 0)
+
+    # Generate subnet mask
+    $mask = [uint32]::MaxValue -shl (32 - $subnetMaskBits)
+
+    # Compare the masked IP with the subnet
+    return ($ipInt -band $mask) -eq ($subnetInt -band $mask)
 }
 
 # Check if the log file exists
@@ -75,19 +83,19 @@ if (Test-Path $logFilePath) {
     # Calculate the time one hour ago
     $timeThreshold = $currentDateTime.AddHours(-1)
 
-    # Read the log file and filter for IP addresses within the last hour
-    $ipAddresses = Get-Content $logFilePath | Where-Object {
-        if ($_ -match '(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})'-and $_ -notmatch "SEND") {
-            $logDateTime = [datetime]::ParseExact($matches[1], 'yyyy-MM-dd HH:mm:ss', $null)
-            return $logDateTime -ge $timeThreshold
-        }
-        return $false
-    } | Select-String -Pattern '\b(?:\d{1,3}\.){3}\d{1,3}\b' | ForEach-Object {
-        $_ -replace '.*?(\b(?:\d{1,3}\.){3}\d{1,3}\b).*', '$1'
-    } | Sort-Object -Unique
+    # Improved IP extraction pattern
+	$ipAddresses = Get-Content $logFilePath | Where-Object {
+    if ($_ -match '(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})' -and $_ -notmatch "SEND") {
+        $logDateTime = [datetime]::ParseExact($matches[1], 'yyyy-MM-dd HH:mm:ss', $null)
+        return $logDateTime -ge $timeThreshold
+    }
+    return $false
+	} | Select-String -Pattern '(?<=\s|^)(?:\d{1,3}\.){3}\d{1,3}(?=\s|$)' | ForEach-Object {
+    $_.Matches.Value
+	} | Sort-Object -Unique
 
     # Define excluded subnets
-    $excludedSubnets = @("192.168.0.0", "192.168.0.0")
+    $excludedSubnets = @("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")
 
     # Report each unique IP address to AbuseIPDB, excluding specific ranges
     foreach ($ip in $ipAddresses) {
@@ -104,7 +112,7 @@ if (Test-Path $logFilePath) {
         if ($excluded) { continue }
 
         $url = "https://api.abuseipdb.com/api/v2/report"
-        $comment = "Automatic report from MS firewall log."
+        $comment = "Automatic report from firewall log."
         $categories = "14,15,18"  # Adjust as necessary
 
         $body = @{
@@ -123,12 +131,19 @@ if (Test-Path $logFilePath) {
         }
 
         try {
-            # Send the request
-            $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -Headers $headers -ContentType "application/x-www-form-urlencoded"
-            Log-Message "Reported IP: $ip - Response: $($response.data.message)"
-        } catch {
-            Log-Message "Failed to report IP: $ip - Error: $_"
-        }
+    # Send the request
+    $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -Headers $headers -ContentType "application/x-www-form-urlencoded"
+    
+    # Safe API response logging
+    $message = if ($response.data -and $response.data.message) { 
+        $response.data.message 
+    } else { 
+        "No message returned" 
+    }
+    Log-Message "Reported IP: $ip - Response: $message"
+	} catch {
+    Log-Message "Failed to report IP: $ip - Error: $($_.Exception.Message)"
+	}
 
         # Introduce a 1-second delay between reports
         Start-Sleep -Seconds 1
