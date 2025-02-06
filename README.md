@@ -7,10 +7,10 @@ ___Editable variables:___
 Line #2: $logFilePath - location of your FW log files  
 Line #3: $reportLogPath - location where the log files of this script will be located  
 Line #6: $apiKey - this key MUST be edited, paste your AbuseIPDB key between the quotation marks, delete the YOUR API KEY HERE text from the string of course  
-Line #76: $timeThreshold - timeframe for reading the FW log (default is last 1hr)  
-Line #90: $excludedSubnets - definition of the subnets excluded from reporting  
-Line #107: $comment - this string will be sent as comment to your report, do not leave this string empty  
-Line #108: $categories - reported categories, you can find more about the categories here: https://www.abuseipdb.com/categories  
+Line #84: $timeThreshold - timeframe for reading the FW log (default is last 1hr)  
+Line #98: $excludedSubnets - definition of the subnets excluded from reporting  
+Line #115: $comment - this string will be sent as comment to your report, do not leave this string empty  
+Line #116: $categories - reported categories, you can find more about the categories here: https://www.abuseipdb.com/categories  
 
 
 ___How to enable logging of the dropped packets in Windows Firewall:___  
