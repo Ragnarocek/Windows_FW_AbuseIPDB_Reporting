@@ -20,21 +20,18 @@ function Log-Message {
 
     $newLogEntries = @()
     foreach ($entry in $logEntries) {
-        # Only attempt to parse entries that start with a valid timestamp format
-        if ($entry -match '^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}') {
+        if ($entry -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})') {
             try {
-                $entryDate = [datetime]::ParseExact($entry.Substring(0, 19), 'yyyy-MM-dd HH:mm:ss', $null)
+                $entryDate = [datetime]::ParseExact($matches[1], 'yyyy-MM-dd HH:mm:ss', $null)
                 if ($entryDate -ge $cutoffDate) {
                     $newLogEntries += $entry
                 }
             } catch {
-                # Ignore any parsing errors for valid log entries
                 Write-Host "Failed to parse log entry: $entry"
             }
         }
     }
 
-    # Rewrite the log file with filtered entries
     Set-Content -Path $reportLogPath -Value $newLogEntries
 }
 
@@ -44,85 +41,89 @@ function Is-IPInRange {
         [string]$ip,
         [string]$cidr
     )
-
-    # Validate IP format
-    if (-not [IPAddress]::TryParse($ip, [ref]$null)) {
-        return $false
-    }
-
-    # Split CIDR notation
+    
     $parts = $cidr -split '/'
     if ($parts.Count -ne 2) { return $false }
 
     $subnetIP = [IPAddress]$parts[0]
     $subnetMaskBits = [int]$parts[1]
-
-    # Validate subnet mask range
+    
     if ($subnetMaskBits -lt 0 -or $subnetMaskBits -gt 32) { return $false }
 
-    # Convert IP and subnet to 32-bit unsigned integers (big-endian)
     $ipBytes = ([IPAddress]::Parse($ip)).GetAddressBytes()
-    [Array]::Reverse($ipBytes)  # Convert to big-endian
+    [Array]::Reverse($ipBytes)
     $ipInt = [BitConverter]::ToUInt32($ipBytes, 0)
 
     $subnetBytes = $subnetIP.GetAddressBytes()
-    [Array]::Reverse($subnetBytes)  # Convert to big-endian
+    [Array]::Reverse($subnetBytes)
     $subnetInt = [BitConverter]::ToUInt32($subnetBytes, 0)
 
-    # Generate subnet mask
     $mask = [uint32]::MaxValue -shl (32 - $subnetMaskBits)
-
-    # Compare the masked IP with the subnet
     return ($ipInt -band $mask) -eq ($subnetInt -band $mask)
 }
 
 # Check if the log file exists
 if (Test-Path $logFilePath) {
-    # Get the current date and time
-    $currentDateTime = Get-Date
-    # Calculate the time one hour ago
-    $timeThreshold = $currentDateTime.AddHours(-1)
+$currentDateTime = Get-Date
+$timeThreshold = $currentDateTime.AddHours(-1)
 
-    # Improved IP extraction pattern
-	$ipAddresses = Get-Content $logFilePath | Where-Object {
-    if ($_ -match '(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})' -and $_ -notmatch "SEND") {
-        $logDateTime = [datetime]::ParseExact($matches[1], 'yyyy-MM-dd HH:mm:ss', $null)
-        return $logDateTime -ge $timeThreshold
-    }
-    return $false
-	} | Select-String -Pattern '(?<=\s|^)(?:\d{1,3}\.){3}\d{1,3}(?=\s|$)' | ForEach-Object {
-    $_.Matches.Value
-	} | Sort-Object -Unique
+$entries = Get-Content $logFilePath | Where-Object {
+	if ($_ -match '^(?<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+DROP\s+TCP\s+(?<ip>(\d{1,3}\.){3}\d{1,3})') {
+		$rawTimestamp = $matches['timestamp']
+		$ipAddress = $matches['ip']
+			if ($rawTimestamp -and $ipAddress) {
+			try {
+				$logDateTime = [datetime]::ParseExact($rawTimestamp, 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
+				return $logDateTime -ge $timeThreshold
+			} catch {
+				Log-Message "Failed to parse timestamp: '$rawTimestamp' in line: $_"
+				return $false
+			}
+		}
+	}
+	return $false
+} | ForEach-Object {
+	try {
+		$parsedTimestamp = [datetime]::ParseExact($matches['timestamp'], 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
+		[PSCustomObject]@{
+			Timestamp = $parsedTimestamp.ToString("yyyy-MM-ddTHH:mm:sszzz")  # Format for AbuseIPDB
+			IP = $matches['ip']
+		}
+	} catch {
+		Log-Message "Skipping entry due to timestamp parsing failure: $_"
+	}
+} | Sort-Object IP, Timestamp -Unique
 
-    # Define excluded subnets
-    $excludedSubnets = @("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")
+	$excludedSubnets = @("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")
 
-    # Report each unique IP address to AbuseIPDB, excluding specific ranges
-    foreach ($ip in $ipAddresses) {
-        # Exclude the specified IP ranges
-        $excluded = $false
-        foreach ($subnet in $excludedSubnets) {
-            if (Is-IPInRange $ip $subnet) {
-                $excluded = $true
-                Log-Message "Skipped IP: $ip (within excluded range $subnet)"
-                break
-            }
+    foreach ($entry in $entries) {
+        $ip = $entry.IP
+        $timestamp = $entry.Timestamp
+        
+        $excluded = $excludedSubnets | Where-Object { Is-IPInRange $ip $_ }
+        if ($excluded) {
+            Log-Message "Skipped IP: $ip (within excluded range)"
+            continue
         }
-
-        if ($excluded) { continue }
-
+        
+	$logEntryPattern = [regex]::Escape("Reported IP: $ip ")
+	if (Select-String -Path $reportLogPath -Pattern $logEntryPattern -Quiet) {
+    #Log-Message "Skipping already reported IP: $ip"
+		continue
+	}
+        
         $url = "https://api.abuseipdb.com/api/v2/report"
         $comment = "Automatic report from firewall log."
-        $categories = "14,15,18"  # Adjust as necessary
+        $categories = "14,15,18"
 
         $body = @{
-            "ip"        = $ip
-            "comment"   = $comment
+            "ip"         = $ip
+            "timestamp"  = $timestamp
+            "comment"    = $comment
             "categories" = $categories
         }
 
-        # Log the request
-        Log-Message "Sending request for IP: $ip"
+        Log-Message "Sending request for IP: $ip at $timestamp"
         Log-Message "Request Body: $($body | ConvertTo-Json)"
 
         $headers = @{
@@ -131,21 +132,13 @@ if (Test-Path $logFilePath) {
         }
 
         try {
-    # Send the request
-    $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -Headers $headers -ContentType "application/x-www-form-urlencoded"
-    
-    # Safe API response logging
-    $message = if ($response.data -and $response.data.message) { 
-        $response.data.message 
-    } else { 
-        "No message returned" 
-    }
-    Log-Message "Reported IP: $ip - Response: $message"
-	} catch {
-    Log-Message "Failed to report IP: $ip - Error: $($_.Exception.Message)"
-	}
+            $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -Headers $headers -ContentType "application/x-www-form-urlencoded"
+            $message = if ($response.data -and $response.data.message) { $response.data.message } else { "No message returned" }
+            Log-Message "Reported IP: $ip at $timestamp - Response: $message"
+        } catch {
+            Log-Message "Failed to report IP: $ip at $timestamp - Error: $($_.Exception.Message)"
+        }
 
-        # Introduce a 1-second delay between reports
         Start-Sleep -Seconds 1
     }
 } else {
